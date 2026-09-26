@@ -1293,7 +1293,7 @@ async function backupToDrive(){
       // text/plain keeps this a "simple" request, which Apps Script can answer.
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({ profile: BACKUP_PROFILE, key: BACKUP_KEY, build: BUILD, csv: historyCsv(S.sessions),
-                             json: JSON.stringify({ rot:S.rot, settings:S.settings, bars:S.bars, prefs:S.prefs, sessions:S.sessions }) })
+                             json: JSON.stringify({ rot:S.rot, settings:S.settings, bars:S.bars, prefs:S.prefs, lifts:S.lifts, sessions:S.sessions }) })
     });
     const j = await r.json();
     if (!j || !j.ok) throw new Error((j && j.error) || "The backup was refused.");
@@ -1334,11 +1334,14 @@ async function restoreFromDrive(){
     for (const x of S.sessions) if (x && x.id) byId[x.id] = x;      // anything newer on this phone wins
     S.sessions = Object.keys(byId).map(k => byId[k]);
     sortSessions();
-    if (d.rot && !S.sessions.some(x => !d.sessions.some(y => y.id === x.id))) S.rot = Object.assign({}, S.rot, d.rot);
+    // If this phone has nothing the backup lacks, take the backup as it stands, coaching included:
+    // the coaching can hold deliberate choices (lifts she reset) that a rebuild would undo.
+    const phoneOnly = S.sessions.some(x => !(d.sessions || []).some(y => y.id === x.id));
+    if (d.rot && !phoneOnly) S.rot = Object.assign({}, S.rot, d.rot);
     if (d.settings) S.settings = Object.assign({}, d.settings, S.settings);
     if (d.bars) S.bars = Object.assign({}, d.bars, S.bars);
     if (d.prefs) S.prefs = Object.assign({}, S.prefs, { alarm: d.prefs.alarm, keepAwake: d.prefs.keepAwake });
-    rebuildLifts();
+    if (d.lifts && !phoneOnly) S.lifts = d.lifts; else rebuildLifts();
     cacheLocal();
     try { localStorage.setItem(LS_RESTORED, code); } catch(e){}
     S.restoreMsg = "Your workout history was restored: " + S.sessions.length + " workouts.";
