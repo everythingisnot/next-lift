@@ -615,7 +615,7 @@ const HANDS_DEFAULT = { one_arm_row:"one" };
 
 /* Bumped on every publish, and shown at the foot of Settings, so it is possible to tell from
    the phone which build is actually running. */
-const BUILD = "2026-09-29b";
+const BUILD = "2026-09-29c";
 
 /* Bumped when the coaching rules change, so the app replays her history once under the new rules
    and the next recommendation matches them. 2 = judged on the sets she actually did (2026-09-29). */
@@ -1126,6 +1126,7 @@ function logSet(exId){
   // next set starts there.
   e.weight = ex.banded ? null : w;
   e.blank = false;
+  delete e.typed;
   e.sets.push({ reps: r, rpe: null, weight: e.weight });
   saveDraft();
   startRest(ex);
@@ -1623,10 +1624,10 @@ function setsBlock(ex, e, t){
   if (e.sets.length < allowed) {
     const n = e.sets.length + 1;
     const prevSet = e.sets[e.sets.length-1];
-    const totalVal = e.weight != null ? e.weight : (t.weight != null ? t.weight : null);
+    const totalVal = e.typed != null ? e.typed : (e.weight != null ? e.weight : (t.weight != null ? t.weight : null));
     const perSide  = isPerSide(ex);
     // After she switches equipment mid-card the old number means nothing, so the box starts empty.
-    const wVal = (e.blank || totalVal == null) ? "" : (perSide ? perSideFrom(ex, totalVal) : totalVal);
+    const wVal = ((e.blank && e.typed == null) || totalVal == null) ? "" : (perSide ? perSideFrom(ex, totalVal) : totalVal);
     const rVal = prevSet ? prevSet.reps : t.reps;
     h += '<div class="capt">' +
          (ex.banded ? '' : '<b>' + weightCaption(ex) + '</b>') + '<b>Reps</b></div>';
@@ -1667,7 +1668,7 @@ function warmupSets(ex, W){
   const out = [];
   if (EQUIP[eq] && EQUIP[eq].perSide) {
     const bar = baseWeight(ex);
-    if (W - bar < 20) return [];                  // barely more than the bar: no ramp needed
+    if (W <= bar) return [];                      // just the bar: nothing to warm up with
     out.push({ w: bar, side: 0, reps: 8 });
     for (const [p, reps] of steps) {
       // Plates go on in pairs, so round the weight a side up to the next 2.5.
@@ -1676,14 +1677,39 @@ function warmupSets(ex, W){
       if (side > 0 && w < W && w > out[out.length-1].w) out.push({ w: w, side: side, reps: reps });
     }
   } else {
-    if (W < 20) return [];
+    if (W < 10) return [];
+    const step = eq === "dumbbell" ? (ex.inc || 2.5) : 5;
     for (const [p, reps] of steps) {
-      const w = Math.round(W * p / 5) * 5;
+      const w = Math.round(W * p / step) * step;
       const prev = out.length ? out[out.length-1].w : 0;
       if (w > 0 && w < W && w > prev) out.push({ w: w, reps: reps });
     }
   }
   return out;
+}
+/* The weight the warm-up is worked out from: what she typed today, else the day's plan. */
+function warmFrom(e, t){
+  if (e.typed != null) return e.typed;
+  if (e.blank) return null;
+  return e.weight != null ? e.weight : t.weight;
+}
+/* Called as she types or steps the weight box. Rewrites only the warm-up block, so the box keeps
+   focus. A new weight clears the tick-offs, since they were for different numbers. */
+function updateWarm(exId){
+  const box = document.getElementById("warm_" + exId);
+  const el = document.getElementById("w_" + exId);
+  if (!box || !el || !S.draft) return;
+  const ex = exercisesFor(S.draft.day, draftRot()).find(x => x.id === exId);
+  if (!ex) return;
+  const e = entryFor(ex);
+  const raw = el.value === "" ? null : Number(el.value);
+  const total = (raw == null || isNaN(raw)) ? null : (isPerSide(ex) ? totalFrom(ex, raw) : raw);
+  if (total !== e.typed) {
+    e.typed = total;
+    if (S.draft.warm && S.draft.warm[exId]) { S.draft.warm = Object.assign({}, S.draft.warm); delete S.draft.warm[exId]; }
+  }
+  saveDraft();
+  box.innerHTML = warmBlock(ex, warmFrom(e, targetFor(ex)));
 }
 function warmBlock(ex, W){
   const ws = warmupSets(ex, W);
@@ -1765,7 +1791,7 @@ function viewSession(){
            '" placeholder="which colour today?"></div>';
     }
 
-    if (!e.sets.length && !e.blank) h += warmBlock(ex, e.weight != null ? e.weight : t.weight);
+    if (!e.sets.length) h += '<div id="warm_' + ex.id + '">' + warmBlock(ex, warmFrom(e, t)) + '</div>';
     h += setsBlock(ex, e, t);
 
     const open = S.openNotes[ex.id];
@@ -2288,8 +2314,8 @@ document.addEventListener("click", function(ev){
       pushState(); render();
       break;
 
-    case "w-": { const ex = curEx(); if (ex) { stepInput("w_"+exId, -weightStep(ex), 0); updateTotal(exId); } break; }
-    case "w+": { const ex = curEx(); if (ex) { stepInput("w_"+exId, weightStep(ex), 0); updateTotal(exId); } break; }
+    case "w-": { const ex = curEx(); if (ex) { stepInput("w_"+exId, -weightStep(ex), 0); updateTotal(exId); updateWarm(exId); } break; }
+    case "w+": { const ex = curEx(); if (ex) { stepInput("w_"+exId, weightStep(ex), 0); updateTotal(exId); updateWarm(exId); } break; }
     case "r-": stepInput("r_"+exId, -1, 1); break;
     case "r+": stepInput("r_"+exId, 1, 1); break;
     case "log": logSet(exId); break;
@@ -2351,7 +2377,7 @@ document.addEventListener("click", function(ev){
       S.settings = Object.assign({}, S.settings);
       S.settings[exId] = Object.assign({}, S.settings[exId] || {}, { equip: v });
       const en = S.draft.entries[exId];
-      if (en && !en.sets.length) { en.weight = null; en.blank = true; }
+      if (en && !en.sets.length) { en.weight = null; en.blank = true; delete en.typed; }
       saveDraft(); pushState(); render();
       break;
     }
@@ -2465,7 +2491,7 @@ function defaultRest(id){
 
 document.addEventListener("input", function(ev){
   const el = ev.target.closest("[data-act]");
-  if (el && el.getAttribute("data-act") === "wv") updateTotal(el.getAttribute("data-ex"));
+  if (el && el.getAttribute("data-act") === "wv") { updateTotal(el.getAttribute("data-ex")); updateWarm(el.getAttribute("data-ex")); }
 });
 
 document.addEventListener("change", function(ev){
