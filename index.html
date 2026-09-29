@@ -437,6 +437,22 @@ input,textarea{font:inherit;color:inherit}
 .mini button:active{background:var(--accent-soft);color:var(--accent-text)}
 .mini input{width:62px;border:none;background:none;text-align:center;font-family:var(--f-num);font-weight:600;font-size:16px;padding:10px 0;-moz-appearance:textfield}
 .mini input::-webkit-outer-spin-button,.mini input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.mini .mv{min-width:40px;text-align:center;font-family:var(--f-num);font-weight:600;font-size:16px}
+.mini.sm button{width:40px;height:40px}
+
+/* "Sets today" stepper on each exercise card */
+.setsday{display:flex;align-items:center;gap:12px;margin-top:-4px}
+.setsday span{flex:1;font-size:15px;font-weight:600;color:var(--ink-2)}
+.setsday-help{font-size:13.5px;color:var(--ink-3);margin-top:-6px}
+
+/* Sets and reps block in Settings */
+.plan-row{padding:12px 16px;border-top:1px solid var(--line-soft);display:flex;flex-direction:column;gap:8px}
+.plan-row:first-child{border-top:none}
+.plan-row .pr-n{font-size:16px;font-weight:600}
+.plan-row .pr-n i{display:block;font-style:normal;font-weight:400;font-size:13.5px;color:var(--ink-3)}
+.plan-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.plan-line > b{width:44px;font-size:14.5px;font-weight:600;color:var(--ink-2)}
+.plan-line > em{font-style:normal;font-size:14.5px;color:var(--ink-3)}
 
 /* ---------- history editor ---------- */
 .card.pad{padding:14px 16px}
@@ -533,7 +549,7 @@ const PROGRAM = {
     name: "Squat",
     warmup: "Cossack squats, then 2-3 ramp sets",
     slots: [
-      { alt:"squat", main:true, sets:4, repLow:6, repHigh:8, rest:210, inc:5,
+      { alt:"squat", main:true, sets:4, repLow:5, repHigh:6, rest:210, inc:5,
         options:[{id:"back_squat",name:"Back squat"},{id:"lunges",name:"Static lunges"}] },
       { id:"pull_aparts", name:"Band pull-aparts", banded:true,
         sets:3, repLow:8, repHigh:12, rest:60 }
@@ -553,8 +569,8 @@ const PROGRAM = {
     name: "Deadlift",
     warmup: "2-3 ramp sets",
     slots: [
-      { id:"trap_bar", name:"Trap bar deadlift", main:true, fiveable:true,
-        sets:4, repLow:6, repHigh:8, rest:210, inc:5 },
+      { id:"trap_bar", name:"Trap bar deadlift", main:true,
+        sets:4, repLow:5, repHigh:6, rest:210, inc:5 },
       { id:"curls", name:"Bicep curls", sets:3, repLow:8, repHigh:12, rest:90, inc:5 }
     ]
   },
@@ -562,8 +578,8 @@ const PROGRAM = {
     name: "Press",
     warmup: "2-3 ramp sets",
     slots: [
-      { id:"bench", name:"Bench press", main:true, sets:4, repLow:6, repHigh:8, rest:210, inc:5 },
-      { id:"ohp", name:"Overhead press", main:true, sets:4, repLow:6, repHigh:8, rest:150, inc:5 },
+      { id:"bench", name:"Bench press", main:true, sets:3, repLow:6, repHigh:8, rest:210, inc:5 },
+      { id:"ohp", name:"Overhead press", main:true, sets:3, repLow:8, repHigh:10, rest:150, inc:5 },
       { id:"lat_raise", name:"Lateral raises", sets:3, repLow:8, repHigh:12, rest:90, inc:5 }
     ]
   }
@@ -599,7 +615,11 @@ const HANDS_DEFAULT = { one_arm_row:"one" };
 
 /* Bumped on every publish, and shown at the foot of Settings, so it is possible to tell from
    the phone which build is actually running. */
-const BUILD = "2026-09-25e";
+const BUILD = "2026-09-29a";
+
+/* Bumped when the coaching rules change, so the app replays her history once under the new rules
+   and the next recommendation matches them. 2 = judged on the sets she actually did (2026-09-29). */
+const COACH_V = 2;
 
 /* Every date the app writes is an Ottawa date, whatever clock the phone or browser is on.
    toISOString() is UTC, which put any workout started after 8pm (7pm in winter) on tomorrow. */
@@ -726,8 +746,20 @@ function resolve(slot, rot){
   const ov = S.settings[base.id] || {};
   const ex = Object.assign({}, base, ov);
   if (base.fiveable && ov.five) { ex.sets = 5; ex.repLow = 5; ex.repHigh = 6; }
+  // Her adjustable dumbbells move in 2.5 lb steps, so that is the default jump on dumbbells.
+  // A jump she sets herself in Settings always wins.
+  if (ov.inc == null) ex.inc = (!ex.banded && equipFor(ex) === "dumbbell") ? 2.5 : (base.inc || 5);
   ex.inc = ex.inc || 5;
   return ex;
+}
+/* The plan an exercise starts from before any Settings change: sets, rep range. */
+function slotDefaults(id){
+  for (const d of DAYS) for (const s of PROGRAM[d].slots) {
+    if (s.id === id || (s.alt && s.options.some(o => o.id === id))) {
+      return { sets: s.sets, repLow: s.repLow, repHigh: s.repHigh };
+    }
+  }
+  return { sets: 3, repLow: 8, repHigh: 12 };
 }
 function exercisesFor(day, rot){
   return PROGRAM[day].slots.map(s => resolve(s, rot));
@@ -854,28 +886,44 @@ function firstTarget(ex){
   };
 }
 
-/* Given a finished entry, work out what to do next time. */
+/* Fewest sets that count as a full day for the coaching. 3, or fewer if her plan for that
+   exercise is fewer. Below this the day is saved but changes nothing. */
+function minSets(ex){ return Math.max(1, Math.min(3, ex.sets || 3)); }
+
+/* Given a finished entry, work out what to do next time.
+   Judged on every set she actually did, however many that was: 3 one day and 4 the next both
+   work. The weight goes up when every one of them reached the top of the range. */
 function progress(ex, entry, prev){
-  const reps = entry.sets.map(s => s.reps).filter(r => r != null);
-  const rpes = entry.sets.map(s => s.rpe).filter(Boolean);
+  const done = entry.sets.filter(s => s.reps != null);
+  const reps = done.map(s => s.reps);
+  const rpes = done.map(s => s.rpe).filter(Boolean);
   // Every set has its own weight. Coaching goes by the heaviest one she used.
   const w    = topWeight(entry);
   const inc  = ex.inc;
-  // Bonus sets beyond the plan are saved and shown, but the coaching call is made on the
-  // planned sets only, so an extra tired set can never block a weight increase.
-  const planned = entry.sets.slice(0, ex.sets);
-  const judged = reps.slice(0, ex.sets);
-  const jRpes  = planned.map(s => s.rpe).filter(Boolean);
+  const n    = reps.length;
+  const judged = reps;
   // A set done lighter than the top weight still counts as reaching the range, but it can never
   // earn a weight increase: the top of the range has to be hit at the top weight.
-  const atTop  = planned.map(s => { const sw = setW(s, entry); return w == null || sw == null || sw >= w; });
-  const hitTop = judged.length >= ex.sets && judged.every((r, i) => r >= ex.repHigh && atTop[i]);
-  const hitLow = judged.length > 0 && judged.every(r => r >= ex.repLow);
-  const avgRpe = jRpes.length ? jRpes.reduce((a,b)=>a+b,0) / jRpes.length : null;
+  const atTop  = done.map(s => { const sw = setW(s, entry); return w == null || sw == null || sw >= w; });
+  const full   = n >= minSets(ex);
+  const hitTop = full && judged.every((r, i) => r >= ex.repHigh && atTop[i]);
+  const hitLow = n > 0 && judged.every(r => r >= ex.repLow);
+  const avgRpe = rpes.length ? rpes.reduce((a,b)=>a+b,0) / rpes.length : null;
   let stalls = (prev && prev.stalls) || 0;
   let next;
 
-  if (!hitLow) {
+  if (!full) {
+    // A short day (1 or 2 sets) is saved and shown, but it never moves the plan, never counts
+    // as a stall and can never trigger a deload.
+    const was = prev && prev.next;
+    const lead = "Only " + n + (n === 1 ? " set" : " sets") + " last time, so the plan did not change.";
+    // base keeps the original advice, so two short days in a row do not stack the lead-in.
+    const base = was ? (was.base || was.msg || "") : "";
+    next = was
+      ? Object.assign({}, was, { msg: lead + " " + base, base: base })
+      : { weight:w, reps:ex.repLow, tone:"hold", chip:"Same again",
+          msg: lead + (ex.banded ? " Same band again." : " Same weight again.") };
+  } else if (!hitLow) {
     stalls += 1;
     if (stalls >= 2) {
       stalls = 0;
@@ -894,7 +942,7 @@ function progress(ex, entry, prev){
       }
     } else {
       next = { weight:w, reps:ex.repLow, tone:"hold", chip:"Repeat",
-        msg:"You came up short of " + ex.repLow + ". Same weight again, get all " + ex.sets + " sets to " + ex.repLow + "." };
+        msg:"You came up short of " + ex.repLow + ". Same weight again, get every set to " + ex.repLow + "." };
     }
   } else if (hitTop && avgRpe != null && avgRpe >= 9) {
     stalls = 0;
@@ -910,17 +958,17 @@ function progress(ex, entry, prev){
             msg:"Clean sweep. Next time use a stronger band and start again at " + ex.repLow + " reps." };
     } else if (w) {
       next = { weight:w + inc, reps:ex.repLow, tone:"good", chip:"Add " + inc + " lb",
-        msg:"All " + ex.sets + " sets at " + ex.repHigh + ". Go to " + (w+inc) + " lb and start again at " + ex.repLow + " reps." };
+        msg:"All " + n + " sets at " + ex.repHigh + ". Go to " + (w+inc) + " lb and start again at " + ex.repLow + " reps." };
     } else {
       next = { weight:null, reps:ex.repHigh, tone:"good", chip:"Add load",
         msg:"Top of the range on every set. Hold a light plate next time, or slow the lowering right down." };
     }
-  } else if (judged.length >= ex.sets && judged.every(r => r >= ex.repHigh)) {
+  } else if (judged.every(r => r >= ex.repHigh)) {
     // Every rep target was hit, but some sets were done lighter than the top weight.
     stalls = 0;
     next = { weight:w, reps:ex.repHigh, tone:"hold", chip:"Stay at " + w + " lb",
-      msg:"Every set reached " + ex.repHigh + ", but not all at " + w + " lb. Do all " + ex.sets +
-          " sets at " + w + " before the weight goes up." };
+      msg:"Every set reached " + ex.repHigh + ", but not all at " + w + " lb. Do every set at " + w +
+          " before the weight goes up." };
   } else {
     stalls = 0;
     const aim = Math.min(ex.repHigh, Math.min.apply(null, judged) + 1);
@@ -1014,6 +1062,7 @@ async function connect(){
       S.sessions = (thaw((q.docs || []).map(x => x.data())) || [])
         .filter(function(x){ return x && !x.deleted; });
     } catch(e){}
+    if (migrateCoach()) { try { Promise.resolve(pushState()).catch(function(){}); } catch(e){} }
     cacheLocal();
   } catch(e){ /* offline / not granted -> local only */ }
   finally { render(); }
@@ -1048,11 +1097,15 @@ function entryFor(ex){
       weight: t.weight,
       band: (S.lifts[ex.id] && S.lifts[ex.id].band) || "",
       note: "",
-      extra: 0,          // bonus sets she asked for beyond the plan
+      target: ex.sets,   // sets she plans to do today; the "Sets today" stepper changes it
       sets: []
     };
   }
   return d.entries[ex.id];
+}
+/* Sets planned for today. A draft from before build 2026-09-29a has no target, only bonus sets. */
+function entryTarget(ex, e){
+  return e.target != null ? e.target : ex.sets + (e.extra || 0);
 }
 
 function logSet(exId){
@@ -1564,7 +1617,7 @@ function setsBlock(ex, e, t){
          '</div>';
   });
 
-  const allowed = ex.sets + (e.extra || 0);
+  const allowed = entryTarget(ex, e);
   if (e.sets.length < allowed) {
     const n = e.sets.length + 1;
     const prevSet = e.sets[e.sets.length-1];
@@ -1594,10 +1647,6 @@ function setsBlock(ex, e, t){
     h += '<button class="tick" data-act="log" data-ex="' + ex.id + '" type="button">' +
          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5l5.5 5.5L20 6"/></svg>' +
          'Log set ' + n + '</button>';
-    if (n > ex.sets) {
-      h += '<div class="rpe-help">Bonus set ' + (n - ex.sets) + '. It gets saved, but the plan for ' +
-           'next time is still worked out from your first ' + ex.sets + ' sets.</div>';
-    }
   } else {
     h += '<button class="addset" data-act="addset" data-ex="' + ex.id + '" type="button">' +
          '+ Add another set</button>';
@@ -1672,6 +1721,14 @@ function viewSession(){
     h += '<div class="ex-sub">' + ex.sets + ' sets &times; ' +
          (ex.repLow === ex.repHigh ? ex.repLow : ex.repLow + "-" + ex.repHigh) + ' reps &middot; rest ' +
          mmss(ex.rest) + '</div>';
+    const tgt = entryTarget(ex, e);
+    h += '<div class="setsday"><span>Sets today</span><div class="mini sm">' +
+         '<button data-act="tgt-" data-ex="' + ex.id + '" type="button" aria-label="One set fewer today">&minus;</button>' +
+         '<b class="mv" aria-live="polite">' + tgt + '</b>' +
+         '<button data-act="tgt+" data-ex="' + ex.id + '" type="button" aria-label="One more set today">+</button></div></div>';
+    if (tgt < minSets(ex)) {
+      h += '<div class="setsday-help">Under ' + minSets(ex) + ' sets is saved, but the plan for next time stays the same.</div>';
+    }
     h += '<div class="coach ' + t.tone + '">' + esc(t.msg);
     if (lift && lift.date && lift.reps && lift.reps.length) {
       const ws = lift.weights || [];
@@ -1791,6 +1848,13 @@ function rebuildLifts(){
     }
   }
   S.lifts = lifts;
+}
+/* Once per coaching-rule change: replay the history under the new rules. Returns true if it ran. */
+function migrateCoach(){
+  if (prefs().coachV === COACH_V) return false;
+  if (S.sessions.length) rebuildLifts();
+  S.prefs = Object.assign({}, S.prefs, { coachV: COACH_V });
+  return true;
 }
 function persistSession(rec){
   cacheLocal();
@@ -2064,6 +2128,40 @@ function viewSettings(){
   }
   h += '</div>';
 
+  // Her usual plan per exercise. The workout card starts from these; "Sets today" can still
+  // change the number of sets on the day without touching this.
+  h += '<div class="sec-title">Sets and reps</div><div class="card">';
+  const seenP = {};
+  for (const d of DAYS) {
+    for (const s of PROGRAM[d].slots) {
+      const opts = s.alt ? s.options : [{id:s.id, name:s.name}];
+      for (const o of opts) {
+        if (seenP[o.id]) continue;
+        seenP[o.id] = 1;
+        const ex = exDefById(o.id) || Object.assign({}, s, o);
+        const df = slotDefaults(o.id);
+        const cur = S.settings[o.id] || {};
+        const changed = ["sets","repLow","repHigh"].some(k => cur[k] != null && cur[k] !== df[k]);
+        const mini = (act, v, label) =>
+          '<div class="mini sm"><button data-act="' + act + '-" data-ex="' + o.id + '" type="button" aria-label="' + label + ' down">&minus;</button>' +
+          '<b class="mv">' + v + '</b>' +
+          '<button data-act="' + act + '+" data-ex="' + o.id + '" type="button" aria-label="' + label + ' up">+</button></div>';
+        h += '<div class="plan-row"><div class="pr-n">' + esc(o.name) + '<i>' +
+             (changed ? 'changed from ' + df.sets + ' &times; ' + (df.repLow === df.repHigh ? df.repLow : df.repLow + '-' + df.repHigh)
+                      : (ex.banded ? (ex.assistBand ? 'lighter band' : 'stronger band') : 'weight goes up') +
+                        ' when every set reaches ' + ex.repHigh) + '</i></div>';
+        h += '<div class="plan-line"><b>Sets</b>' + mini("psets", ex.sets, "Sets") + '</div>';
+        h += '<div class="plan-line"><b>Reps</b>' + mini("plow", ex.repLow, "Lowest reps") + '<em>to</em>' +
+             mini("phigh", ex.repHigh, "Highest reps") + '</div>';
+        if (changed) h += '<button class="altswap" data-act="preset" data-ex="' + o.id + '" type="button">Back to ' +
+             df.sets + ' &times; ' + (df.repLow === df.repHigh ? df.repLow : df.repLow + '-' + df.repHigh) + '</button>';
+        h += '</div>';
+      }
+    }
+  }
+  h += '</div>';
+  h += '<div class="foot">Your usual plan. On the day, "Sets today" on each exercise changes just that workout.</div>';
+
   h += '<div class="sec-title">Weight jump per session</div><div class="card">';
   const seen = {};
   for (const d of DAYS) {
@@ -2072,7 +2170,7 @@ function viewSettings(){
       for (const o of opts) {
         if (seen[o.id] || s.banded) continue;
         seen[o.id] = 1;
-        const ex = Object.assign({}, s, o, S.settings[o.id] || {});
+        const ex = exDefById(o.id) || Object.assign({}, s, o, S.settings[o.id] || {});
         h += '<div class="set-row"><div class="sr-n">' + esc(o.name) + '<i>how much it adds when you clear the range</i></div>' +
              '<div class="mini"><button data-act="inc-" data-ex="' + o.id + '" type="button">&minus;</button>' +
              '<input data-act="incv" data-ex="' + o.id + '" type="number" inputmode="decimal" step="2.5" value="' + (ex.inc||5) + '">' +
@@ -2193,10 +2291,14 @@ document.addEventListener("click", function(ev){
     case "r-": stepInput("r_"+exId, -1, 1); break;
     case "r+": stepInput("r_"+exId, 1, 1); break;
     case "log": logSet(exId); break;
-    case "addset": {
-      if (!S.draft || !S.draft.entries[exId]) break;
-      const en = S.draft.entries[exId];
-      en.extra = (en.extra || 0) + 1;
+    case "addset": case "tgt+": case "tgt-": {
+      // Sets today. Never below the sets already logged, never below 1.
+      const ex = curEx();
+      if (!ex) break;
+      const en = entryFor(ex);
+      const cur = entryTarget(ex, en);
+      en.target = (a === "tgt-") ? Math.max(1, en.sets.length, cur - 1) : Math.min(10, cur + 1);
+      delete en.extra;
       saveDraft(); render();
       break;
     }
@@ -2307,9 +2409,32 @@ document.addEventListener("click", function(ev){
     case "rest+": bumpRest(30); break;
     case "rest0": stopRest(); break;
 
+    case "psets-": case "psets+": case "plow-": case "plow+": case "phigh-": case "phigh+": {
+      const ex = exDefById(exId);
+      if (!ex) break;
+      const up = a.slice(-1) === "+" ? 1 : -1;
+      let sets = ex.sets, lo = ex.repLow, hi = ex.repHigh;
+      if (a.indexOf("psets") === 0) sets = clamp(sets + up, 1, 10);
+      else if (a.indexOf("plow") === 0) { lo = clamp(lo + up, 1, 30); if (hi < lo) hi = lo; }
+      else { hi = clamp(hi + up, 1, 30); if (lo > hi) lo = hi; }
+      S.settings = Object.assign({}, S.settings);
+      S.settings[exId] = Object.assign({}, S.settings[exId] || {}, { sets: sets, repLow: lo, repHigh: hi });
+      // A new rep range changes what the history means, so the coaching is replayed under it.
+      rebuildLifts(); pushState(); render();
+      break;
+    }
+    case "preset": {
+      const cur = Object.assign({}, S.settings[exId] || {});
+      delete cur.sets; delete cur.repLow; delete cur.repHigh;
+      S.settings = Object.assign({}, S.settings);
+      S.settings[exId] = cur;
+      rebuildLifts(); pushState(); render();
+      break;
+    }
     case "inc-": case "inc+": {
       const cur = S.settings[exId] || {};
-      const base = cur.inc != null ? cur.inc : 5;
+      const def = exDefById(exId);
+      const base = cur.inc != null ? cur.inc : ((def && def.inc) || 5);
       S.settings = Object.assign({}, S.settings);
       S.settings[exId] = Object.assign({}, cur, { inc: Math.max(1.25, base + (a==="inc+" ? 2.5 : -2.5)) });
       pushState(); render();
@@ -2403,6 +2528,7 @@ document.addEventListener("keydown", function(ev){
    BOOT
    ============================================================ */
 loadLocal();
+if (migrateCoach()) cacheLocal();
 render();
 connect();
 // Light up the Drive backup section once the connector capability answers.
