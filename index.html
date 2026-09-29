@@ -615,7 +615,7 @@ const HANDS_DEFAULT = { one_arm_row:"one" };
 
 /* Bumped on every publish, and shown at the foot of Settings, so it is possible to tell from
    the phone which build is actually running. */
-const BUILD = "2026-09-29a";
+const BUILD = "2026-09-29b";
 
 /* Bumped when the coaching rules change, so the app replays her history once under the new rules
    and the next recommendation matches them. 2 = judged on the sets she actually did (2026-09-29). */
@@ -1203,7 +1203,9 @@ async function doFinish(){
   if (d.day === "A") S.rot.squat = (d.squat === "back_squat") ? "lunges" : "back_squat";
   if (d.day === "B") S.rot.ham   = (d.ham === "ghd") ? "rdl" : "ghd";
 
-  S.draft = null; S.rest = null;
+  // stopRest() also cancels the beeps already scheduled on the audio clock; just clearing
+  // S.rest left them to go off minutes after the workout was over.
+  S.draft = null; stopRest();
   saveDraft();
   cacheLocal();
 
@@ -2278,7 +2280,7 @@ document.addEventListener("click", function(ev){
     case "ditch":
       // Two taps instead of confirm(), which a sandboxed frame can block. The first tap arms
       // the button, the second does it.
-      if (S.armDitch) { S.armDitch = false; S.draft = null; saveDraft(); render(); }
+      if (S.armDitch) { S.armDitch = false; S.draft = null; stopRest(); saveDraft(); render(); }
       else { S.armDitch = true; render(); }
       break;
     case "pick":
